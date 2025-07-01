@@ -1,0 +1,73 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Pitara Database Debug</title>
+    <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+</head>
+<body>
+    <h1>Pitara Database Debug Tool</h1>
+    <div id="results"></div>
+    
+    <script>
+        const SUPABASE_URL = 'https://hatsyhittlnzingruvwp.supabase.co';
+        const SUPABASE_SERVICE_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImhhdHN5aGl0dGxuemluZ3J1dndwIiwicm9sZSI6InNlcnZpY2Vfcm9sZSIsImlhdCI6MTc1MDEwMTEyMCwiZXhwIjoyMDY1Njc3MTIwfQ.24JoHxH5skURhfTd7zgF54GTcpFyffbW20Z-qBtUmWQ';
+        
+        const supabase = window.supabase.createClient(SUPABASE_URL, SUPABASE_SERVICE_KEY);
+        
+        async function debugDatabase() {
+            const resultsDiv = document.getElementById('results');
+            resultsDiv.innerHTML = '<h2>Database Debug Results:</h2>';
+            
+            try {
+                // Test 1: Check table structure
+                resultsDiv.innerHTML += '<h3>1. Testing table structure...</h3>';
+                
+                const { data: tableInfo, error: tableError } = await supabase
+                    .rpc('get_table_columns', { table_name: 'series_meta' });
+                
+                if (tableError) {
+                    resultsDiv.innerHTML += `<p style="color:orange">Table info error: ${tableError.message}</p>`;
+                }
+                
+                // Test 2: Try to fetch series without visible column
+                resultsDiv.innerHTML += '<h3>2. Testing series fetch without visible column...</h3>';
+                
+                const { data: seriesData, error: seriesError } = await supabase
+                    .from('series_meta')
+                    .select('id, title, genre, description, status, episodes, created_at, image_url, is_featured')
+                    .order('created_at', { ascending: false });
+                
+                if (seriesError) {
+                    resultsDiv.innerHTML += `<p style="color:red">Series fetch error: ${seriesError.message}</p>`;
+                } else {
+                    resultsDiv.innerHTML += `<p style="color:green">✅ Found ${seriesData.length} series in database!</p>`;
+                    seriesData.forEach(series => {
+                        resultsDiv.innerHTML += `<p>📺 ${series.title} (${series.status})</p>`;
+                    });
+                }
+                
+                // Test 3: Try to fetch with visible column
+                resultsDiv.innerHTML += '<h3>3. Testing series fetch WITH visible column...</h3>';
+                
+                const { data: seriesWithVisible, error: visibleError } = await supabase
+                    .from('series_meta')
+                    .select('id, title, genre, description, status, episodes, created_at, image_url, is_featured, visible')
+                    .order('created_at', { ascending: false });
+                
+                if (visibleError) {
+                    resultsDiv.innerHTML += `<p style="color:red">❌ Visible column error: ${visibleError.message}</p>`;
+                    resultsDiv.innerHTML += `<p style="color:yellow">🔧 This means you need to run the migration SQL first!</p>`;
+                } else {
+                    resultsDiv.innerHTML += `<p style="color:green">✅ Visible column exists! Found ${seriesWithVisible.length} series!</p>`;
+                }
+                
+            } catch (err) {
+                resultsDiv.innerHTML += `<p style="color:red">Error: ${err.message}</p>`;
+            }
+        }
+        
+        // Run debug when page loads
+        debugDatabase();
+    </script>
+</body>
+</html> 

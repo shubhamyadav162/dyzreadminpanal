@@ -14,5 +14,8 @@
         { "key": "Access-Control-Allow-Headers", "value": "Content-Type, Authorization" }
       ]
     }
-  ]
+  ],
+  "public": true,
+  "buildCommand": "npm run build",
+  "outputDirectory": "dist"
 } 

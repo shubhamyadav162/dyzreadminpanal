@@ -7,10 +7,35 @@ import { Textarea } from "@/components/ui/textarea"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table"
 import { Badge } from "@/components/ui/badge"
-import { Plus, Trash2, Clock, CheckCircle, XCircle, Eye, Link as LinkIcon, Star, StarOff } from "lucide-react"
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
+import { Plus, Trash2, Clock, CheckCircle, XCircle, Eye, EyeOff, Link as LinkIcon, Star, StarOff } from "lucide-react"
 import { Checkbox } from "@/components/ui/checkbox"
 import { useState, useEffect } from "react"
 import { supabase } from "@/integrations/supabase/client"
+
+// Predefined genres for web series
+const GENRE_OPTIONS = [
+  { value: "action", label: "🎬 Action" },
+  { value: "comedy", label: "😂 Comedy" },
+  { value: "drama", label: "🎭 Drama" },
+  { value: "thriller", label: "😱 Thriller" },
+  { value: "romance", label: "💕 Romance" },
+  { value: "crime", label: "🔍 Crime" },
+  { value: "horror", label: "👻 Horror" },
+  { value: "sci-fi", label: "🚀 Sci-Fi" },
+  { value: "fantasy", label: "🔮 Fantasy" },
+  { value: "family", label: "👨‍👩‍👧‍👦 Family" },
+  { value: "mystery", label: "🔍 Mystery" },
+  { value: "biography", label: "📖 Biography" },
+  { value: "documentary", label: "📹 Documentary" },
+  { value: "historical", label: "🏛️ Historical" },
+  { value: "musical", label: "🎵 Musical" },
+  { value: "adventure", label: "🗺️ Adventure" },
+  { value: "psychological", label: "🧠 Psychological" },
+  { value: "supernatural", label: "👻 Supernatural" },
+  { value: "political", label: "🏛️ Political" },
+  { value: "sports", label: "⚽ Sports" }
+]
 
 interface Episode {
   title: string
@@ -30,6 +55,7 @@ interface SeriesUpload {
   uploadedEpisodes: number
   posterUrl: string
   isFeatured: boolean
+  visible: boolean
 }
 
 export default function UploadSeries() {
@@ -84,15 +110,37 @@ export default function UploadSeries() {
   // Fetch existing series on first render
   useEffect(() => {
     const fetchUploadHistory = async () => {
-      const { data, error } = await supabase
+      console.log('🔍 Fetching upload history...')
+      
+      // First try with visible column
+      let { data, error } = await supabase
         .from('series_meta')
-        .select('id, title, genre, description, status, episodes, created_at, image_url, is_featured')
+        .select('id, title, genre, description, status, episodes, created_at, image_url, is_featured, visible')
         .order('created_at', { ascending: false })
 
+      // If error (probably because visible column doesn't exist), try without it
+      if (error && error.message.includes('visible')) {
+        console.warn('⚠️ Visible column not found, fetching without it. Please run migration!')
+        const fallbackResult = await supabase
+          .from('series_meta')
+          .select('id, title, genre, description, status, episodes, created_at, image_url, is_featured')
+          .order('created_at', { ascending: false })
+        
+        // Add visible property manually to match interface
+        data = fallbackResult.data?.map((row: any) => ({
+          ...row,
+          visible: true // Default to true when column doesn't exist
+        }))
+        error = fallbackResult.error
+      }
+
       if (error) {
-        console.error('Failed to fetch upload history', error)
+        console.error('❌ Failed to fetch upload history', error)
+        alert('Database error: ' + error.message + '\n\nPlease run the migration SQL first!')
         return
       }
+
+      console.log(`✅ Fetched ${data?.length || 0} series from database`)
 
       const history: SeriesUpload[] = (data || []).map((row: any) => ({
         id: row.id,
@@ -105,7 +153,8 @@ export default function UploadSeries() {
         totalEpisodes: row.episodes ?? 0,
         uploadedEpisodes: row.episodes ?? 0,
         posterUrl: row.image_url ?? '',
-        isFeatured: row.is_featured ?? false
+        isFeatured: row.is_featured ?? false,
+        visible: row.visible ?? true // Default to true if column doesn't exist
       }))
 
       setUploadHistory(history)
@@ -208,7 +257,8 @@ export default function UploadSeries() {
           genre: seriesGenre,
           image_url: posterUrl.trim(),
           is_featured: isFeatured,
-          episodes: episodes.length
+          episodes: episodes.length,
+          visible: true
         })
         .eq('id', editingSeriesId)
 
@@ -287,7 +337,8 @@ export default function UploadSeries() {
           is_featured: isFeatured,
           episodes: episodes.length,
           status: 'active',
-          image_url: posterUrl.trim()
+          image_url: posterUrl.trim(),
+          visible: true
         })
         .select()
         .single()
@@ -319,7 +370,8 @@ export default function UploadSeries() {
         totalEpisodes: episodes.length,
         uploadedEpisodes: episodes.length,
         posterUrl,
-        isFeatured
+        isFeatured,
+        visible: true
       }
 
       setUploadHistory([newSeries, ...uploadHistory])
@@ -361,7 +413,8 @@ export default function UploadSeries() {
           is_featured: isFeatured,
           episodes: 0,
           status: 'coming_soon',
-          image_url: posterUrl.trim()
+          image_url: posterUrl.trim(),
+          visible: true
         })
         .select()
         .single()
@@ -379,7 +432,8 @@ export default function UploadSeries() {
         totalEpisodes: 0,
         uploadedEpisodes: 0,
         posterUrl,
-        isFeatured
+        isFeatured,
+        visible: true
       }
 
       setUploadHistory([newSeries, ...uploadHistory])
@@ -422,6 +476,48 @@ export default function UploadSeries() {
       alert('Failed to delete series, see console for details')
     } finally {
       setIsUploading(false)
+    }
+  }
+
+  // Get genre display label with emoji
+  const getGenreLabel = (genreValue: string) => {
+    const genre = GENRE_OPTIONS.find(g => g.value === genreValue)
+    return genre ? genre.label : genreValue
+  }
+
+  // Toggle visibility of series in mobile app
+  const handleToggleVisibility = async (seriesId: string, currentVisibility: boolean) => {
+    try {
+      const newVisibility = !currentVisibility
+      
+      // Update in database
+      const { error } = await supabase
+        .from('series_meta')
+        .update({ visible: newVisibility })
+        .eq('id', seriesId)
+
+      if (error) {
+        if (error.message.includes('visible')) {
+          alert('❌ Database में visible column नहीं है!\n\nPlease पहले migration SQL run करें:\nADD_VISIBILITY_TOGGLE_MIGRATION.sql')
+          return
+        }
+        throw error
+      }
+
+      // Update local state
+      setUploadHistory(prev => prev.map(series => 
+        series.id === seriesId 
+          ? { ...series, visible: newVisibility }
+          : series
+      ))
+
+      // Show confirmation
+      const status = newVisibility ? 'दिखाई देगी' : 'छुप जाएगी'
+      alert(`✅ Series अब mobile app में ${status}!`)
+      
+    } catch (err) {
+      console.error('Failed to toggle visibility', err)
+      alert('❌ Visibility toggle failed. Please try again.')
     }
   }
 
@@ -495,12 +591,18 @@ export default function UploadSeries() {
                       </div>
                       <div className="space-y-2">
                         <Label htmlFor="genre">Genre</Label>
-                        <Input 
-                          id="genre" 
-                          placeholder="e.g., Drama, Comedy, Thriller" 
-                          value={seriesGenre}
-                          onChange={(e) => setSeriesGenre(e.target.value)}
-                        />
+                        <Select value={seriesGenre} onValueChange={setSeriesGenre}>
+                          <SelectTrigger>
+                            <SelectValue placeholder="Select genre..." />
+                          </SelectTrigger>
+                          <SelectContent>
+                            {GENRE_OPTIONS.map((genre) => (
+                              <SelectItem key={genre.value} value={genre.value}>
+                                {genre.label}
+                              </SelectItem>
+                            ))}
+                          </SelectContent>
+                        </Select>
                       </div>
                     </div>
                     <div className="space-y-2">
@@ -686,6 +788,7 @@ export default function UploadSeries() {
                       <TableHead>Upload Date</TableHead>
                       <TableHead>Status</TableHead>
                       <TableHead>Progress</TableHead>
+                      <TableHead>Visibility</TableHead>
                       <TableHead>Actions</TableHead>
                     </TableRow>
                   </TableHeader>
@@ -698,7 +801,7 @@ export default function UploadSeries() {
                             <div className="text-sm text-muted-foreground line-clamp-1">{series.description}</div>
                           </div>
                         </TableCell>
-                        <TableCell className="text-white">{series.genre}</TableCell>
+                        <TableCell className="text-white">{getGenreLabel(series.genre)}</TableCell>
                         <TableCell className="text-white">{series.totalEpisodes}</TableCell>
                         <TableCell className="text-white">{series.uploadDate}</TableCell>
                         <TableCell>
@@ -720,6 +823,30 @@ export default function UploadSeries() {
                                 }}
                               />
                             </div>
+                          </div>
+                        </TableCell>
+                        <TableCell>
+                          <div className="flex items-center justify-center">
+                            <Button
+                              variant={series.visible ? "default" : "outline"}
+                              size="sm"
+                              onClick={() => handleToggleVisibility(series.id, series.visible)}
+                              title={series.visible ? "Hide from Mobile App" : "Show in Mobile App"}
+                              className={`${
+                                series.visible 
+                                  ? "bg-green-600 hover:bg-green-700 text-white" 
+                                  : "bg-red-600 hover:bg-red-700 text-white border-red-600"
+                              }`}
+                            >
+                              {series.visible ? (
+                                <Eye className="h-4 w-4" />
+                              ) : (
+                                <EyeOff className="h-4 w-4" />
+                              )}
+                              <span className="ml-1 text-xs">
+                                {series.visible ? "ON" : "OFF"}
+                              </span>
+                            </Button>
                           </div>
                         </TableCell>
                         <TableCell>
