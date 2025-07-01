@@ -11,6 +11,7 @@ import {
   SidebarFooter,
 } from "@/components/ui/sidebar"
 import { LayoutDashboard, Upload, Users, Calendar, Bell, Settings, CreditCard } from "lucide-react"
+import { Link } from "react-router-dom"
 
 const menuItems = [
   {
@@ -78,10 +79,10 @@ export function AppSidebar() {
                     asChild 
                     className="hover:bg-sidebar-accent hover:text-sidebar-accent-foreground transition-colors"
                   >
-                    <a href={item.url} className="flex items-center gap-3 px-3 py-2">
+                    <Link to={item.url} className="flex items-center gap-3 px-3 py-2">
                       <item.icon className="h-5 w-5" />
                       <span className="font-medium">{item.title}</span>
-                    </a>
+                    </Link>
                   </SidebarMenuButton>
                 </SidebarMenuItem>
               ))}
