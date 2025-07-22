@@ -8,7 +8,11 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Search, Filter, Download, Star, TrendingUp, X } from "lucide-react"
 import { useSubscribers } from "@/hooks/useSubscribers"
 import { usePaymentMonitor } from "@/hooks/usePaymentMonitor"
-import { useState, useMemo, useCallback } from "react"
+import { useState, useMemo, useCallback, useEffect } from "react"
+import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, DialogClose } from "@/components/ui/dialog";
+import { supabase } from "@/integrations/supabase/client"
+import { Calendar } from "@/components/ui/calendar";
+import { addDays, isAfter, isBefore, isSameDay, parseISO } from "date-fns";
 
 function formatCurrency(amount: number) {
   return new Intl.NumberFormat("en-IN", { style: "currency", currency: "INR", maximumFractionDigits: 0 }).format(amount);
@@ -34,7 +38,37 @@ interface FilterState {
 export default function Subscriptions() {
   const { subscribers, loading } = useSubscribers();
   const { payments } = usePaymentMonitor(1000); // Get more payments for search
-  
+
+  // Fetch subscriptions and plan info for fallback
+  const [subscriptions, setSubscriptions] = useState<any[]>([]);
+  useEffect(() => {
+    async function fetchSubs() {
+      const { data } = await supabase
+        .from('user_subscriptions')
+        .select('id, user_id, plan_id, status, start_date, end_date, created_at, plan:subscription_plans(name, price, duration_days)')
+        .order('created_at', { ascending: false });
+      setSubscriptions(data || []);
+    }
+    fetchSubs();
+  }, []);
+
+  // Merge subscriptions with payments and subscribers
+  const enrichedSubscriptions = useMemo(() => {
+    return subscriptions.map(sub => {
+      const user = subscribers.find(u => u.id === sub.user_id) || {};
+      const payment = payments.find(p => p.user_id === sub.user_id && p.plan_id === sub.plan_id && (p.status === 'paid' || p.status === 'captured'));
+      return {
+        ...sub,
+        user,
+        payment,
+        isVerified: !!payment,
+        amount: payment ? payment.amount / 100 : (sub.plan?.price || 0),
+        paymentMethod: 'Razorpay', // Always Razorpay
+        paymentStatus: payment ? payment.status : (sub.status === 'active' ? 'Active' : 'Inactive'),
+      };
+    });
+  }, [subscriptions, payments, subscribers]);
+
   // Search and Filter State
   const [searchQuery, setSearchQuery] = useState("");
   const [showFilters, setShowFilters] = useState(false);
@@ -45,9 +79,14 @@ export default function Subscriptions() {
     authMethod: "all"
   });
 
+  const [selectedSubscriber, setSelectedSubscriber] = useState<any | null>(null);
+  const [dialogOpen, setDialogOpen] = useState(false);
+  const [dateRange, setDateRange] = useState<{ from?: Date; to?: Date }>({});
+  const [showCalendar, setShowCalendar] = useState(false);
+
   // Enhanced search functionality
   const filteredSubscribers = useMemo(() => {
-    let result = subscribers;
+    let result = enrichedSubscriptions;
 
     // Apply search query
     if (searchQuery.trim()) {
@@ -55,14 +94,14 @@ export default function Subscriptions() {
       result = result.filter(subscriber => {
         // Search in user details
         const userMatch = 
-          subscriber.email?.toLowerCase().includes(query) ||
-          subscriber.name?.toLowerCase().includes(query) ||
-          subscriber.phone?.toLowerCase().includes(query) ||
-          subscriber.id.toLowerCase().includes(query);
+          subscriber.user.email?.toLowerCase().includes(query) ||
+          subscriber.user.name?.toLowerCase().includes(query) ||
+          subscriber.user.phone?.toLowerCase().includes(query) ||
+          subscriber.user.id.toLowerCase().includes(query);
 
         // Search in payment data for this user
         const userPayments = payments.filter(p => 
-          p.user_email?.toLowerCase() === subscriber.email?.toLowerCase()
+          p.user_id === subscriber.user_id
         );
         
         const paymentMatch = userPayments.some(payment =>
@@ -79,44 +118,56 @@ export default function Subscriptions() {
     // Apply filters
     if (filters.status !== "all") {
       result = result.filter(subscriber => {
-        if (filters.status === "active") return subscriber.is_active;
-        if (filters.status === "inactive") return !subscriber.is_active;
+        if (filters.status === "active") return subscriber.status === "active";
+        if (filters.status === "inactive") return subscriber.status === "inactive";
         return true;
       });
     }
 
     if (filters.plan !== "all") {
       result = result.filter(subscriber => {
-        if (filters.plan === "premium") return subscriber.subscription_tier === "Premium";
-        if (filters.plan === "free") return subscriber.subscription_tier === "Free";
+        if (filters.plan === "premium") return subscriber.plan?.name === "Monthly Plan"; // Assuming "Monthly Plan" is the premium one
+        if (filters.plan === "free") return subscriber.plan?.name === "Mini Plan"; // Assuming "Mini Plan" is the free one
         return true;
       });
     }
 
     if (filters.authMethod !== "all") {
       result = result.filter(subscriber => 
-        subscriber.auth_method === filters.authMethod
+        subscriber.user.auth_method === filters.authMethod
       );
     }
 
     if (filters.paymentStatus !== "all") {
       result = result.filter(subscriber => {
         const userPayments = payments.filter(p => 
-          p.user_email?.toLowerCase() === subscriber.email?.toLowerCase()
+          p.user_id === subscriber.user_id
         );
         if (userPayments.length === 0) return filters.paymentStatus === "none";
         return userPayments.some(p => p.status === filters.paymentStatus);
       });
     }
 
+    // Date range filter
+    if (dateRange.from && dateRange.to) {
+      result = result.filter(subscriber => {
+        const date = subscriber.start_date ? parseISO(subscriber.start_date) : undefined;
+        if (!date) return false;
+        return (
+          (isSameDay(date, dateRange.from) || isAfter(date, dateRange.from)) &&
+          (isSameDay(date, dateRange.to) || isBefore(date, dateRange.to))
+        );
+      });
+    }
+
     return result;
-  }, [subscribers, payments, searchQuery, filters]);
+  }, [enrichedSubscriptions, payments, searchQuery, filters, dateRange]);
 
   // Enhanced subscriber data with payment information
   const enrichedSubscribers = useMemo(() => {
     return filteredSubscribers.map(subscriber => {
       const userPayments = payments.filter(p => 
-        p.user_email?.toLowerCase() === subscriber.email?.toLowerCase()
+        p.user_id === subscriber.user_id
       );
       
       const latestPayment = userPayments.sort((a, b) => 
@@ -189,6 +240,8 @@ export default function Subscriptions() {
       authMethod: "all"
     });
     setShowFilters(false);
+    setDateRange({}); // Clear date range
+    setShowCalendar(false); // Hide calendar
   };
 
   const totalSubscriptions = subscribers.length;
@@ -338,7 +391,7 @@ export default function Subscriptions() {
                   <Filter className="h-4 w-4 mr-2" />
                   Filter
                 </Button>
-                {(searchQuery || Object.values(filters).some(f => f !== "all")) && (
+                {(searchQuery || Object.values(filters).some(f => f !== "all") || dateRange.from || dateRange.to) && (
                   <Button variant="outline" size="sm" onClick={clearFilters}>
                     <X className="h-4 w-4 mr-1" />
                     Clear
@@ -349,7 +402,7 @@ export default function Subscriptions() {
             
             {/* Filter Panel */}
             {showFilters && (
-              <div className="grid grid-cols-1 md:grid-cols-4 gap-4 mt-4 p-4 bg-gray-800/50 rounded-lg border">
+              <div className="grid grid-cols-1 md:grid-cols-5 gap-4 mt-4 p-4 bg-gray-800/50 rounded-lg border">
                 <div>
                   <label className="text-sm text-gray-300 mb-2 block">Subscription Status</label>
                   <Select value={filters.status} onValueChange={(value) => setFilters(prev => ({...prev, status: value}))}>
@@ -407,21 +460,45 @@ export default function Subscriptions() {
                     </SelectContent>
                   </Select>
                 </div>
+                <div>
+                  <label className="text-sm text-gray-300 mb-2 block">Date Range</label>
+                  <button
+                    className="w-full border rounded px-3 py-2 bg-background text-left text-sm"
+                    onClick={() => setShowCalendar((v) => !v)}
+                  >
+                    {dateRange.from && dateRange.to
+                      ? `${dateRange.from.toLocaleDateString()} - ${dateRange.to.toLocaleDateString()}`
+                      : "Select range"}
+                  </button>
+                  {showCalendar && (
+                    <div className="absolute z-50 mt-2 bg-background border rounded shadow-lg">
+                      <Calendar
+                        mode="range"
+                        selected={dateRange}
+                        onSelect={(range) => {
+                          setDateRange(range || {});
+                          setShowCalendar(false);
+                        }}
+                        numberOfMonths={2}
+                      />
+                    </div>
+                  )}
+                </div>
               </div>
             )}
           </CardHeader>
           <CardContent>
             {loading ? (
               <p className="text-muted-foreground text-sm">Loading subscriptions…</p>
-            ) : enrichedSubscribers.length === 0 ? (
+            ) : filteredSubscribers.length === 0 ? (
               <div className="text-center py-8">
                 <p className="text-muted-foreground text-sm">
-                  {searchQuery || Object.values(filters).some(f => f !== "all") 
+                  {searchQuery || Object.values(filters).some(f => f !== "all") || dateRange.from || dateRange.to
                     ? "No subscriptions found matching your search criteria." 
                     : "No subscriptions found."
                   }
                 </p>
-                {(searchQuery || Object.values(filters).some(f => f !== "all")) && (
+                {(searchQuery || Object.values(filters).some(f => f !== "all") || dateRange.from || dateRange.to) && (
                   <Button variant="outline" size="sm" onClick={clearFilters} className="mt-2">
                     Clear Search & Filters
                   </Button>
@@ -441,57 +518,47 @@ export default function Subscriptions() {
                   </TableRow>
                 </TableHeader>
                 <TableBody>
-                  {enrichedSubscribers.map((sub) => {
-                    const nextBilling = sub.subscription_end ? new Date(sub.subscription_end).toLocaleDateString() : "—";
+                  {filteredSubscribers.map((sub) => {
+                    const nextBilling = sub.end_date ? new Date(sub.end_date).toLocaleDateString() : "—";
                     return (
                       <TableRow key={sub.id}>
                         <TableCell>
                           <div>
-                            <div className="font-medium text-white">{sub.email}</div>
+                            <div className="font-medium text-white">{sub.user.email || "—"}</div>
                             <div className="text-sm text-muted-foreground flex items-center gap-2">
-                              {sub.phone && <span>📱 {sub.phone}</span>}
+                              {sub.user.phone && <span>📱 {sub.user.phone}</span>}
                               <Badge variant="outline" className="text-xs">
-                                {sub.auth_method === 'google' ? 'Google' : 'OTP'}
+                                {sub.user.auth_method === 'google' ? 'Google' : 'OTP'}
                               </Badge>
                             </div>
-                            {sub.latestPayment?.razorpay_payment_id && (
-                              <div className="text-xs text-blue-400 mt-1">
-                                ID: {sub.latestPayment.razorpay_payment_id}
-                              </div>
-                            )}
                           </div>
                         </TableCell>
                         <TableCell className="text-white">
                           <div>
-                            {sub.subscription_tier ?? "Free"}
-                            {sub.totalPayments > 0 && (
-                              <div className="text-xs text-gray-400">
-                                {sub.totalPayments} payments
-                              </div>
-                            )}
+                            {sub.plan?.name ?? "—"}
                           </div>
                         </TableCell>
                         <TableCell className="font-medium text-white">
-                          {sub.totalAmount > 0 ? formatCurrency(sub.totalAmount) : "—"}
+                          {formatCurrency(sub.amount)}
                         </TableCell>
                         <TableCell>
-                          {sub.latestPayment?.payment_method || "—"}
+                          {sub.paymentMethod}
                         </TableCell>
                         <TableCell>
                           <div className="space-y-1">
-                            <Badge variant={sub.is_active ? "default" : "destructive"}>
-                              {sub.is_active ? "Active" : "Inactive"}
+                            <Badge variant={sub.status === 'active' ? "default" : "destructive"}>
+                              {sub.status === 'active' ? "Active" : "Inactive"}
                             </Badge>
-                            {sub.latestPayment && (
-                              <Badge variant="outline" className="text-xs">
-                                {sub.latestPayment.status}
-                              </Badge>
-                            )}
+                            <Badge variant="outline" className="text-xs">
+                              {sub.paymentStatus}
+                            </Badge>
                           </div>
                         </TableCell>
                         <TableCell className="text-white">{nextBilling}</TableCell>
                         <TableCell>
-                          <Button variant="outline" size="sm">View</Button>
+                          <Button variant="outline" size="sm" onClick={() => { setSelectedSubscriber(sub.user); setDialogOpen(true); }}>
+                            View
+                          </Button>
                         </TableCell>
                       </TableRow>
                     );
@@ -501,7 +568,75 @@ export default function Subscriptions() {
             )}
           </CardContent>
         </Card>
+        {/* Total Earned Section */}
+        <div className="flex justify-end mt-4">
+          <div className="bg-gray-900 border border-gray-700 rounded-lg px-6 py-4 text-right">
+            <div className="text-lg font-semibold text-white">Total Earned</div>
+            <div className="text-2xl font-bold text-green-400 mt-1">
+              {formatCurrency(filteredSubscribers.reduce((sum, sub) => sum + (sub.amount || 0), 0))}
+            </div>
+          </div>
+        </div>
       </div>
+
+      <Dialog open={dialogOpen} onOpenChange={setDialogOpen}>
+        <DialogContent className="max-w-3xl w-[95vw] rounded-2xl shadow-2xl bg-[#18181b]/95 border border-border p-0 overflow-hidden">
+          <DialogHeader className="border-b px-8 pt-7 pb-3 bg-[#232326]">
+            <DialogTitle className="text-2xl font-bold text-white mb-1">यूज़र पेमेंट डिटेल्स</DialogTitle>
+            <DialogDescription className="text-muted-foreground text-lg">
+              {selectedSubscriber ? (
+                <div className="mb-2 space-y-1">
+                  <div><span className="font-semibold">ईमेल:</span> {selectedSubscriber.email}</div>
+                  {selectedSubscriber.phone && (<div><span className="font-semibold">फोन:</span> {selectedSubscriber.phone}</div>)}
+                  <div><span className="font-semibold">प्लान:</span> {selectedSubscriber.subscription_tier}</div>
+                  <div><span className="font-semibold">कुल पेमेंट्स:</span> {selectedSubscriber.totalPayments}</div>
+                </div>
+              ) : null}
+            </DialogDescription>
+          </DialogHeader>
+          <div className="px-0 py-6 bg-[#18181b]">
+            {selectedSubscriber && (() => {
+              const userPayments = payments.filter(p => p.user_id === selectedSubscriber.id);
+              if (userPayments.length === 0) return <div className="text-center py-8 text-muted-foreground">कोई पेमेंट रिकॉर्ड नहीं मिला।</div>;
+              return (
+                <div className="overflow-x-auto px-6">
+                  <table className="min-w-[900px] w-full text-base rounded-lg overflow-hidden">
+                    <thead>
+                      <tr className="bg-[#232326] text-white border-b border-border">
+                        <th className="p-4 text-left font-bold whitespace-nowrap min-w-[80px]">राशि</th>
+                        <th className="p-4 text-left font-bold whitespace-nowrap min-w-[120px]">पेमेंट मेथड</th>
+                        <th className="p-4 text-center font-bold whitespace-nowrap min-w-[120px]">स्टेटस</th>
+                        <th className="p-4 text-left font-bold whitespace-nowrap min-w-[180px]">तारीख</th>
+                        <th className="p-4 text-left font-bold whitespace-nowrap min-w-[220px]">Razorpay Payment ID</th>
+                        <th className="p-4 text-left font-bold whitespace-nowrap min-w-[220px]">Order ID</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {userPayments.map((p, idx) => (
+                        <tr key={p.id} className={idx % 2 === 0 ? "bg-[#18181b]" : "bg-[#222226]"}>
+                          <td className="p-4 font-semibold text-white whitespace-nowrap">₹{(p.amount ?? 0) / 100}</td>
+                          <td className="p-4 whitespace-nowrap">{p.payment_method || "—"}</td>
+                          <td className="p-4 text-center">
+                            <span className={`inline-block px-3 py-1 rounded-full text-sm font-bold ${p.status === 'paid' || p.status === 'completed' ? 'bg-green-600/20 text-green-400 border border-green-700' : 'bg-yellow-600/20 text-yellow-400 border border-yellow-700'}`}>{p.status}</span>
+                          </td>
+                          <td className="p-4 whitespace-nowrap">{new Date(p.created_at).toLocaleString()}</td>
+                          <td className="p-4 font-mono text-xs break-all whitespace-pre-line">{p.razorpay_payment_id || "—"}</td>
+                          <td className="p-4 font-mono text-xs break-all whitespace-pre-line">{p.razorpay_order_id || "—"}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              );
+            })()}
+          </div>
+          <div className="px-8 pb-7 pt-3 bg-[#18181b]">
+            <DialogClose asChild>
+              <Button variant="outline" className="w-full text-lg py-3">बंद करें</Button>
+            </DialogClose>
+          </div>
+        </DialogContent>
+      </Dialog>
     </DashboardLayout>
   )
 }
